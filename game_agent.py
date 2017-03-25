@@ -7,6 +7,8 @@ You must test your agent's strength against a set of agents with known
 relative strength using tournament.py and include the results in your report.
 """
 import random
+import math
+from operator import itemgetter
 
 
 class Timeout(Exception):
@@ -36,9 +38,22 @@ def custom_score(game, player):
     float
         The heuristic value of the current game state to the specified player.
     """
+    if game.is_winner(player): return float("inf")
+    if game.is_loser(player): return float("-inf")
+    own_moves = len(game.get_legal_moves(player))
+    opp_moves = len(game.get_legal_moves(game.get_opponent(player)))    
+    own_loc = game.get_player_location(player)
+    opp_loc = game.get_player_location(game.get_opponent(player))      
 
-    # TODO: finish this function!
-    raise NotImplementedError
+    if opp_moves == 0: return float("inf")
+
+    # Approximate the stage of the game
+    progress = game.move_count/(game.height*game.width)
+
+    # Weighting mirroring (annoyance) vs dominance (edge)
+    weight =  progress if progress > 0.3 else 0.3 # Thiny optimization to stay within the time limit
+
+    return weight*own_moves/opp_moves + (1-weight)*(abs(own_loc[0]-opp_loc[0])+abs(abs(own_loc[1]-opp_loc[1]))
 
 
 class CustomPlayer:
@@ -48,20 +63,18 @@ class CustomPlayer:
     alpha-beta to return a good move before the search time limit expires.
 
     Parameters
-    ----------
     search_depth : int (optional)
         A strictly positive integer (i.e., 1, 2, 3,...) for the number of
         layers in the game tree to explore for fixed-depth search. (i.e., a
         depth of one (1) would only explore the immediate sucessors of the
-        current state.)  This parameter should be ignored when iterative = True.
+        current state.)
 
     score_fn : callable (optional)
         A function to use for heuristic evaluation of game states.
 
     iterative : boolean (optional)
         Flag indicating whether to perform fixed-depth search (False) or
-        iterative deepening search (True).  When True, search_depth should
-        be ignored and no limit to search depth.
+        iterative deepening search (True).
 
     method : {'minimax', 'alphabeta'} (optional)
         The name of the search method to use in get_move().
@@ -102,7 +115,8 @@ class CustomPlayer:
             game (e.g., player locations and blocked cells).
 
         legal_moves : list<(int, int)>
-            DEPRECATED -- This argument will be removed in the next release
+            A list containing legal moves. Moves are encoded as tuples of pairs
+            of ints defining the next (row, col) for the agent to occupy.
 
         time_left : callable
             A function that returns the number of milliseconds left in the
@@ -118,25 +132,39 @@ class CustomPlayer:
 
         self.time_left = time_left
 
-        # TODO: finish this function!
-
         # Perform any required initializations, including selecting an initial
         # move from the game board (i.e., an opening book), or returning
         # immediately if there are no legal moves
+        if not legal_moves:
+            return -1, -1
+
+        if game.move_count == 0:
+            return game.height//2, game.width//2    # the center is a good choice at the beginning
+
+        # Get the selected method (minimiax or alpha beta)
+        search_fun = getattr(self, self.method)
 
         try:
             # The search method call (alpha beta or minimax) should happen in
             # here in order to avoid timeout. The try/except block will
             # automatically catch the exception raised by the search method
             # when the timer gets close to expiring
-            pass
+            if self.iterative:
+                depth = 1;
+                while True:
+                    score, move = search_fun(game, depth)
+                    if score == float("inf") or score == float("-inf"):
+                        break
+                    depth += 1
+            else:
+                _, move = search_fun(game, self.search_depth)
 
         except Timeout:
             # Handle any actions required at timeout, if necessary
             pass
 
         # Return the best move from the last completed search iteration
-        raise NotImplementedError
+        return move
 
     def minimax(self, game, depth, maximizing_player=True):
         """Implement the minimax search algorithm as described in the lectures.
@@ -169,11 +197,35 @@ class CustomPlayer:
                 to pass the project unit tests; you cannot call any other
                 evaluation function directly.
         """
+
         if self.time_left() < self.TIMER_THRESHOLD:
             raise Timeout()
 
-        # TODO: finish this function!
-        raise NotImplementedError
+        if not game.get_legal_moves():
+            return game.utility(self), (-1, -1)
+
+        # Expand the minimax tree until the selected depth        
+        if depth == 0:
+            # Add depth 0 we only need to retrieve the score, and the current location
+            return self.score(game, self), game.get_player_location(self)
+        else:
+            # Exploring the game tree, by recursively calling the minimax function, until the selected depth
+            best_move = (-1, -1)
+            best_score = float("-inf") if maximizing_player else float("inf")
+            for move in game.get_legal_moves():
+                score, _ = self.minimax(game.forecast_move(move), depth-1, not maximizing_player)
+                if game.is_winner(self):
+                    # Stop the evaluation early, when the game finished
+                    return score, move                            
+                if maximizing_player:
+                    if score > best_score:
+                        best_score = score
+                        best_move = move
+                else:
+                    if score < best_score:
+                        best_score = score
+                        best_move = move             
+            return best_score, best_move                            
 
     def alphabeta(self, game, depth, alpha=float("-inf"), beta=float("inf"), maximizing_player=True):
         """Implement minimax search with alpha-beta pruning as described in the
@@ -216,5 +268,35 @@ class CustomPlayer:
         if self.time_left() < self.TIMER_THRESHOLD:
             raise Timeout()
 
-        # TODO: finish this function!
-        raise NotImplementedError
+        if not game.get_legal_moves():
+            return game.utility(self), (-1, -1)
+
+        # Expand the minimax tree until the selected depth        
+        if depth == 0:
+            # Add depth 0 we only need to retrieve the score
+            return self.score(game, self), game.get_player_location(self)
+        else:
+            # Exploring the game tree
+            best_move = (-1, -1)
+            best_score = float("-inf") if maximizing_player else float("inf")
+            for move in game.get_legal_moves():
+                score, _ = self.alphabeta(game.forecast_move(move), depth-1, alpha, beta, not maximizing_player)
+                if game.is_winner(self):
+                    # Stop the evaluation early, when the game finished
+                    return score, move                            
+                # Alpha and beta ensure that we exclude branches of the search tree, which don't yield improvement
+                if maximizing_player:
+                    if score >= beta:
+                        return score, move 
+                    if score > best_score:
+                        best_score = score
+                        best_move = move
+                    alpha = max(alpha, best_score) # NOTE: The max could be further optimized, and be replaced by a ternary operator
+                else:
+                    if score <= alpha:
+                        return score, move 
+                    if score < best_score:
+                        best_score = score
+                        best_move = move
+                    beta = min(beta, best_score) # NOTE: The min could be further optimized, and be replaced by a ternary operator                       
+            return best_score, best_move                            
